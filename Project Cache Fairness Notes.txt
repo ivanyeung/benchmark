@@ -1,0 +1,93 @@
+﻿Experiment Results Comparison Table:
+
+
+Setup / workload
+	p99 read latency (for client1)
+	Client1 refault delta
+	Client2 writeback peak
+	Client1 memory PSI
+	Client1 IO PSI
+	Client1 only, sequential
+	3.6 µs
+	0
+	-
+	0.0 ms
+	62.6 ms
+	Client2 only, randread
+	4489.2 µs (for client2)
+	0 (for client2)
+	0
+	0.0 ms (for client2)
+	39898.7 ms (for client2)
+	Client2 only, sequential
+	259.1 µs (for client2)
+	0 (for client2)
+	0
+	0.0 ms (for client2)
+	626.6 ms (for client2)
+	Client2 only, randwrite
+	18743.3 µs (for client2)
+	0(for client2)
+	393,216 B
+	0.0 ms (for client2)
+	2154.4 ms (for client2)
+	Isolated cgroups, seq
+	3.5 µs
+	0
+	0 
+	0.0 ms
+	62.7 ms
+	Isolated cgroups, client2 randread
+	3.7 µs
+	0
+	0
+	0.0 ms
+	59.2 ms
+	Isolated cgroups, client2 randwrite
+	3.5 µs
+	0
+	397,312 B
+	0.0 ms
+	2338.2 ms
+	Shared cgroup, no extra mem cap, client2 seq
+	3.4 µs
+	228
+	0
+	15.9 ms
+	57.8 ms
+	Shared cgroup, no extra mem cap, client2 randread
+	3.7 µs
+	287
+	0
+	24.0 ms
+	56.7 ms
+	Shared cgroup, no extra mem cap, client2 randwrite
+	4.4 µs
+	104,293
+	106,496 B
+	860.4 ms
+	13767.1 ms
+	Shared cgroup, client1 memory.max=1G, client2 randread
+	4.8 µs
+	13,893
+	0
+	60.3 ms
+	7598.4 ms
+	Shared cgroup, client1 memory.max=1G, client2 randwrite
+	4.0 µs
+	172,102
+	102,400 B
+	841.4 ms
+	19001.8 ms
+	Shared cgroup, client2 limited, randread
+	4.6 µs
+	14,515
+	393,216 B
+	310.8 ms
+	18187.3 ms
+	Shared cgroup, client2 limited, randwrite
+	4.8 µs
+	13,512
+	0
+	52.9 ms
+	6995.3 ms
