@@ -404,12 +404,28 @@ static long read_memstat_field(const char *cgroup_name, const char *field) {
     return found;
 }
 
+/* Read a single-integer cgroup control file, e.g. memory.current. */
+static long read_cgroup_scalar(const char *cgroup_name, const char *filename) {
+    if (!is_linux()) return -1;
+    char p[MAX_CMD];
+    snprintf(p, sizeof(p), "%s/%s/%s", CGROUP_ROOT, cgroup_name, filename);
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    long val;
+    long found = (fscanf(f, "%ld", &val) == 1) ? val : -1;
+    fclose(f);
+    return found;
+}
+
 /* Append a before/after memstat row to memstat/<client>_<mode>.csv */
 static void record_memstat(const char *cgroup_name, const char *client,
                            const char *mode, int phase, const char *when,
-                           long prev_refault, long *out_refault) {
+                           long prev_refault, long *out_refault,
+                           long prev_memcur, long *out_memcur) {
     long refault = read_memstat_field(cgroup_name, "workingset_refault_file");
     if (out_refault) *out_refault = refault;
+    long memcur = read_cgroup_scalar(cgroup_name, "memory.current");
+    if (out_memcur) *out_memcur = memcur;
 
     char dir[MAX_CMD], path[MAX_CMD];
     ensure_subdir(opt.output_dir, "memstat", dir, sizeof(dir));
@@ -419,10 +435,15 @@ static void record_memstat(const char *cgroup_name, const char *client,
     FILE *f = fopen(path, "a");
     if (!f) { INFO("warning: memstat csv %s: %s", path, strerror(errno)); return; }
     if (!exists)
-        fprintf(f, "phase,when,workingset_refault_file,workingset_refault_file_delta\n");
+        fprintf(f, "phase,when,wall_time,workingset_refault_file,"
+                   "workingset_refault_file_delta,memory_current_bytes,"
+                   "memory_current_bytes_delta\n");
     long delta = (when && !strcmp(when, "after") && prev_refault >= 0 && refault >= 0)
                      ? refault - prev_refault : -1;
-    fprintf(f, "%d,%s,%ld,%ld\n", phase, when, refault, delta);
+    long memdelta = (when && !strcmp(when, "after") && prev_memcur >= 0 && memcur >= 0)
+                     ? memcur - prev_memcur : -1;
+    fprintf(f, "%d,%s,%ld,%ld,%ld,%ld,%ld\n",
+            phase, when, (long)time(NULL), refault, delta, memcur, memdelta);
     fclose(f);
 }
 
@@ -564,6 +585,16 @@ static pid_t start_iostat(const char *mode) {
     char dir[MAX_CMD], path[MAX_CMD], cmd[MAX_CMD];
     ensure_subdir(opt.output_dir, "iostat", dir, sizeof(dir));
     snprintf(path, sizeof(path), "%s/run_%s.iostat", dir, mode);
+
+    /* Record iostat's own start time so analysis can map each 1s report
+     * (report 0 is the since-boot average; reports 1..N are the 1s
+     * intervals) back to a wall-clock time and line it up against the
+     * per-phase before/after wall_time in memstat/*.csv. */
+    char ts_path[MAX_CMD];
+    snprintf(ts_path, sizeof(ts_path), "%s/run_%s.start_ts", dir, mode);
+    FILE *tf = fopen(ts_path, "w");
+    if (tf) { fprintf(tf, "%ld\n", (long)time(NULL)); fclose(tf); }
+
     /* iostat -dx 1 : extended device stats every second, redirected to file */
     snprintf(cmd, sizeof(cmd), "exec iostat -dx 1 > '%s' 2>/dev/null", path);
 
@@ -760,11 +791,13 @@ static void run_clients(Config *cfg, const CgroupSet *cgset,
 
         /* before-snapshot */
         long prev_refault[MAX_CLIENTS];
+        long prev_memcur[MAX_CLIENTS];
         for (int i = 0; i < n_clients; i++) {
             prev_refault[i] = -1;
+            prev_memcur[i] = -1;
             const CgroupConfig *g = cgset ? cgroup_for_client(cgset, client_names[i]) : NULL;
             if (g) record_memstat(g->cgroup_name, client_names[i], mode_str, ph, "before",
-                                  -1, &prev_refault[i]);
+                                  -1, &prev_refault[i], -1, &prev_memcur[i]);
         }
 
         /* spawn all clients' phase-ph concurrently */
@@ -787,7 +820,7 @@ static void run_clients(Config *cfg, const CgroupSet *cgset,
         for (int i = 0; i < n_clients; i++) {
             const CgroupConfig *g = cgset ? cgroup_for_client(cgset, client_names[i]) : NULL;
             if (g) record_memstat(g->cgroup_name, client_names[i], mode_str, ph, "after",
-                                  prev_refault[i], NULL);
+                                  prev_refault[i], NULL, prev_memcur[i], NULL);
         }
     }
 

@@ -6,6 +6,9 @@ Reads a results directory produced by ./benchmark and reports:
   * IOPS / bandwidth (secondary context)
   * workingset_refault_file_delta per phase per cgroup (from memstat/)
   * dirty-page pressure (from dirty/ — [TODO-3] vmstat + file_dirty samples)
+  * per-cgroup memory.current per phase (from memstat/)
+  * approximate cache hit/miss per phase (fio logical reads vs. iostat device
+    reads observed during the phase window)
 
 Usage: ./benchmark_analysis.py <results_dir>
 """
@@ -142,6 +145,145 @@ def report_psi(results_dir):
         print(f"  {name}: {'  '.join(parts) if parts else '(no data)'}")
 
 
+def report_memory(results_dir):
+    """Per-cgroup memory.current before/after each phase (from memstat/)."""
+    print("\n## \U0001f4be MEMORY CONSUMPTION (cgroup memory.current)")
+    print("=" * 50)
+    memstat_dir = os.path.join(results_dir, "memstat")
+    files = sorted(glob(os.path.join(memstat_dir, "*.csv")))
+    if not files:
+        print("  (no memstat csv found — Linux/cgroup v2 only)")
+        return
+    for path in files:
+        name = os.path.basename(path).replace(".csv", "")
+        print(f"\n**{name}:**")
+        with open(path) as f:
+            for row in csv.DictReader(f):
+                cur = row.get("memory_current_bytes")
+                try:
+                    cur_v = int(cur)
+                except (TypeError, ValueError):
+                    continue
+                if cur_v < 0:
+                    continue
+                mib = cur_v / (1024 * 1024)
+                print(f"  phase {row['phase']} ({row.get('when')}): {mib:9.1f} MiB")
+
+
+def _phase_windows(memstat_path):
+    """Return {phase: (before_wall_time, after_wall_time)} from a memstat csv."""
+    tmp = {}
+    with open(memstat_path) as f:
+        for row in csv.DictReader(f):
+            try:
+                ph = int(row["phase"])
+                wt = int(row["wall_time"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            tmp.setdefault(ph, {})[row.get("when")] = wt
+    return {ph: (d["before"], d["after"]) for ph, d in tmp.items()
+            if "before" in d and "after" in d}
+
+
+def _parse_iostat_samples(iostat_path, start_ts):
+    """Return [(wall_time, total_r_per_s)] for each periodic 1s report block.
+
+    `iostat -dx 1` (no -t) prints a "since boot" report first, then one
+    report per second after that with no per-sample timestamp. We attribute
+    report index i (i>=1, i==0 is the since-boot report) to
+    wall_time = start_ts + i — an approximation, but good enough to bucket
+    ~1s samples into a ~60s phase window.
+    """
+    if not os.path.exists(iostat_path):
+        return []
+    with open(iostat_path) as f:
+        content = f.read()
+    samples = []
+    for block_idx, block in enumerate(content.split("\n\n")):
+        lines = [l for l in block.splitlines() if l.strip()]
+        header_idx = next((i for i, l in enumerate(lines)
+                            if l.strip().startswith("Device")), None)
+        if header_idx is None:
+            continue
+        cols = lines[header_idx].split()
+        if "r/s" not in cols:
+            continue
+        r_idx = cols.index("r/s")
+        total_r = 0.0
+        for line in lines[header_idx + 1:]:
+            fields = line.split()
+            if len(fields) <= r_idx:
+                continue
+            dev = fields[0]
+            if dev.startswith(("loop", "ram", "dm-")):
+                continue
+            try:
+                total_r += float(fields[r_idx])
+            except ValueError:
+                continue
+        if block_idx > 0:
+            samples.append((start_ts + block_idx, total_r))
+    return samples
+
+
+def report_cache_hit_miss(results_dir):
+    """Approximate cache hit/miss: fio logical reads vs. iostat device reads
+    observed in the phase's wall-clock window (see [[_parse_iostat_samples]])."""
+    print("\n## \U0001f3af CACHE HIT / MISS (fio logical reads vs. device reads)")
+    print("=" * 50)
+    print("  Approximate: miss ≈ device reads seen in iostat during the phase")
+    print("  window; hit = fio's logical reads minus that. iostat samples are")
+    print("  bucketed by report index, not exact timestamp — treat as an")
+    print("  estimate, not an exact count.")
+
+    memstat_dir = os.path.join(results_dir, "memstat")
+    iostat_dir = os.path.join(results_dir, "iostat")
+    memstat_files = sorted(glob(os.path.join(memstat_dir, "*.csv")))
+    if not memstat_files:
+        print("  (no memstat csv found — needs --cgroup-config)")
+        return
+
+    for mpath in memstat_files:
+        client_mode = os.path.basename(mpath).replace(".csv", "")
+        client, _, mode = client_mode.rpartition("_")
+        if not client:
+            continue
+        windows = _phase_windows(mpath)
+        if not windows:
+            continue
+
+        iostat_path = os.path.join(iostat_dir, f"run_{mode}.iostat")
+        ts_path = os.path.join(iostat_dir, f"run_{mode}.start_ts")
+        if not (os.path.exists(iostat_path) and os.path.exists(ts_path)):
+            print(f"\n**{client_mode}:** (no iostat data)")
+            continue
+        with open(ts_path) as f:
+            start_ts = int(f.read().strip())
+        samples = _parse_iostat_samples(iostat_path, start_ts)
+
+        print(f"\n**{client_mode}:**")
+        for ph in sorted(windows):
+            before_ts, after_ts = windows[ph]
+            device_reads = sum(r for (wt, r) in samples
+                                if before_ts <= wt <= after_ts + 1)
+
+            data = load_json(os.path.join(results_dir, f"{client}_{mode}_p{ph}.json"))
+            total_ios = 0
+            if data and "jobs" in data:
+                for job in data["jobs"]:
+                    total_ios += job.get("read", {}).get("total_ios", 0)
+
+            if total_ios <= 0:
+                print(f"  phase {ph}: (no fio read ios recorded)")
+                continue
+            misses = min(device_reads, total_ios)
+            hits = max(0, total_ios - misses)
+            hit_rate = 100.0 * hits / total_ios
+            print(f"  phase {ph}: logical_reads={total_ios:,}  "
+                  f"hit={hits:,.0f} ({hit_rate:.2f}%)  "
+                  f"miss≈{misses:,.0f} ({100 - hit_rate:.2f}%)")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -154,6 +296,8 @@ def main():
     print(f"# Page-Cache Fairness Analysis — {results_dir}")
     report_latency(results_dir)
     report_refaults(results_dir)
+    report_memory(results_dir)
+    report_cache_hit_miss(results_dir)
     report_dirty(results_dir)
     report_psi(results_dir)
     print()
