@@ -47,8 +47,12 @@ typedef struct {
     int   rate_iops;                  /* 0 = unlimited                       */
     int   iodepth;
     int   numjobs;
-    int   runtime;                    /* seconds                             */
+    int   runtime;                    /* seconds (time-based, or ceiling)    */
     int   rwmixread;                  /* for randrw; -1 = unset              */
+
+    /* read a fixed amount then stop (not time_based); "" = unset */
+    char  io_size[MAX_STR];           /* e.g. 1G -> fio --io_size            */
+    char  rate_bw[MAX_STR];           /* bandwidth cap e.g. 100m -> --rate   */
 
     /* victim access-distribution skew */
     char  random_distribution[MAX_STR]; /* "" or e.g. "zipf:1.2"             */
@@ -93,6 +97,7 @@ static struct {
     bool        verbose;
     bool        use_cgroups;
     bool        use_psi;
+    bool        drop_once;   /* drop caches only before phase 0, not each phase */
 } opt = {
     .config_path        = "fairness_configs.ini",
     .cgroup_config_path = NULL,
@@ -101,6 +106,7 @@ static struct {
     .verbose            = false,
     .use_cgroups        = true,
     .use_psi            = true,
+    .drop_once          = false,
 };
 
 #define VLOG(...) do { if (opt.verbose) { fprintf(stderr, "[v] " __VA_ARGS__); fprintf(stderr, "\n"); } } while (0)
@@ -187,6 +193,8 @@ static void apply_phase_key(PhaseConfig *p, const char *key, const char *val) {
     else if (!strcmp(key, "numjobs"))             p->numjobs   = atoi(val);
     else if (!strcmp(key, "runtime"))             p->runtime   = atoi(val);
     else if (!strcmp(key, "rwmixread"))           p->rwmixread = atoi(val);
+    else if (!strcmp(key, "io_size"))             snprintf(p->io_size, MAX_STR, "%s", val);
+    else if (!strcmp(key, "rate_bw"))             snprintf(p->rate_bw, MAX_STR, "%s", val);
     /* victim access-distribution skew */
     else if (!strcmp(key, "random_distribution")) snprintf(p->random_distribution, MAX_STR, "%s", val);
     /* flush cadence for checkpoint / WAL B variants */
@@ -645,10 +653,17 @@ static void build_fio_cmd(char *cmd, size_t cap, const ClientConfig *c,
     append(cmd, cap, " --ioengine=%s", p->ioengine);
     append(cmd, cap, " --iodepth=%d", p->iodepth);
     append(cmd, cap, " --numjobs=%d", p->numjobs);
-    append(cmd, cap, " --runtime=%d --time_based", p->runtime);
+    if (p->io_size[0]) {
+        /* read a fixed amount once then stop; runtime (if set) is a ceiling */
+        append(cmd, cap, " --io_size=%s", p->io_size);
+        if (p->runtime > 0) append(cmd, cap, " --runtime=%d", p->runtime);
+    } else {
+        append(cmd, cap, " --runtime=%d --time_based", p->runtime);
+    }
     append(cmd, cap, " --direct=%d", cached ? 0 : 1);
     append(cmd, cap, " --group_reporting");
 
+    if (p->rate_bw[0])    append(cmd, cap, " --rate=%s", p->rate_bw);
     if (p->rate_iops > 0) append(cmd, cap, " --rate_iops=%d", p->rate_iops);
     if (p->rwmixread >= 0 && strstr(p->pattern, "rw"))
         append(cmd, cap, " --rwmixread=%d", p->rwmixread);
@@ -787,7 +802,9 @@ static void run_clients(Config *cfg, const CgroupSet *cgset,
 
     for (int ph = 0; ph < max_phases; ph++) {
         INFO("--- phase %d ---", ph);
-        if (cached) drop_caches();
+        /* With --drop-once, only phase 0 starts cold; later phases keep the
+         * cache so the clients compete for it across phases. */
+        if (cached && (!opt.drop_once || ph == 0)) drop_caches();
 
         /* before-snapshot */
         long prev_refault[MAX_CLIENTS];
@@ -865,6 +882,8 @@ static void usage(const char *argv0) {
 "      --cgroup-config PATH  cgroup layout ini (enables cgroup setup)\n"
 "      --no-cgroup          Disable cgroup setup (shared page-cache pool)\n"
 "      --no-psi             Disable PSI (memory/io.pressure) sampling\n"
+"      --drop-once          Drop the page cache only before phase 0 (default: every phase);\n"
+"                           lets tenants compete for cache built up across phases\n"
 "  -m, --mode MODE          cached | direct | both (default: both)\n"
 "  -o, --output DIR         Results directory (default: benchmark_results)\n"
 "  -v, --verbose            Verbose logging\n"
@@ -886,6 +905,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) opt.verbose = true;
         else if (!strcmp(a, "--no-cgroup")) opt.use_cgroups = false;
         else if (!strcmp(a, "--no-psi")) opt.use_psi = false;
+        else if (!strcmp(a, "--drop-once")) opt.drop_once = true;
         else if ((!strcmp(a, "-c") || !strcmp(a, "--config")) && i + 1 < argc) opt.config_path = argv[++i];
         else if (!strcmp(a, "--cgroup-config") && i + 1 < argc) opt.cgroup_config_path = argv[++i];
         else if ((!strcmp(a, "-o") || !strcmp(a, "--output")) && i + 1 < argc) opt.output_dir = argv[++i];

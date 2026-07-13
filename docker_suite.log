@@ -1,0 +1,82 @@
+### cgroup v2 init
+subtree_control: io memory
+### build
+make: Nothing to be done for 'all'.
+### run all 6 tests
+=== isolated client1 (victim baseline) -> results/isolated_client1 ===
+loaded 2 client section(s) from fairness_isolated.ini
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] set /sys/fs/cgroup/clients/memory.max = 2G
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client1_steady/io.weight: Permission denied
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client2_noisy/io.weight: Permission denied
+=== Running 1 client(s) in cached mode ===
+[v] test file test_file_client1_steady_1G exists
+[v] iostat -dx 1 -> results/isolated_client1/iostat/run_cached.iostat
+--- phase 0 ---
+[v] dropped page cache
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p0 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/isolated_client1/client1_steady_cached_p0.json
+--- phase 1 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p1 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/isolated_client1/client1_steady_cached_p1.json
+--- phase 2 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p2 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/isolated_client1/client1_steady_cached_p2.json
+=== cached mode complete ===
+done. results in results/isolated_client1/
+=== isolated client2 (aggressor baseline) -> results/isolated_client2 ===
+loaded 2 client section(s) from fairness_isolated.ini
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] set /sys/fs/cgroup/clients/memory.max = 2G
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client1_steady/io.weight: Permission denied
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client2_noisy/io.weight: Permission denied
+=== Running 1 client(s) in cached mode ===
+[v] test file test_file_client2_noisy_8G exists
+[v] iostat -dx 1 -> results/isolated_client2/iostat/run_cached.iostat
+--- phase 0 ---
+[v] dropped page cache
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p0 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --rate=8m --output-format=json+ --output=results/isolated_client2/client2_noisy_cached_p0.json
+--- phase 1 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p1 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/isolated_client2/client2_noisy_cached_p1.json
+--- phase 2 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p2 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --output-format=json+ --output=results/isolated_client2/client2_noisy_cached_p2.json
+=== cached mode complete ===
+done. results in results/isolated_client2/
+=== shared dual (3-phase eviction) -> results/shared_dual ===
+loaded 2 client section(s) from fairness_configs.ini
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] set /sys/fs/cgroup/clients/memory.max = 2G
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client1_steady/io.weight: Permission denied
+[v] enabled +memory +io in /sys/fs/cgroup/cgroup.subtree_control
+[v] enabled +memory +io in /sys/fs/cgroup/clients/cgroup.subtree_control
+warning: open /sys/fs/cgroup/clients/client2_noisy/io.weight: Permission denied
+=== Running 2 client(s) in cached mode ===
+[v] test file test_file_client1_steady_1G exists
+[v] test file test_file_client2_noisy_8G exists
+[v] iostat -dx 1 -> results/shared_dual/iostat/run_cached.iostat
+--- phase 0 ---
+[v] dropped page cache
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p0 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/shared_dual/client1_steady_cached_p0.json
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p0 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --rate=8m --output-format=json+ --output=results/shared_dual/client2_noisy_cached_p0.json
+--- phase 1 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p1 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/shared_dual/client1_steady_cached_p1.json
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p1 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/shared_dual/client2_noisy_cached_p1.json
+--- phase 2 ---
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client1_steady/cgroup.procs 2>/dev/null; exec fio --name=client1_steady_p2 --filename=test_file_client1_steady_1G --size=1G --rw=read --bs=64k --ioengine=libaio --iodepth=1 --numjobs=1 --io_size=1G --runtime=60 --direct=0 --group_reporting --rate=100m --output-format=json+ --output=results/shared_dual/client1_steady_cached_p2.json
+[v] exec: echo $$ > /sys/fs/cgroup/clients/client2_noisy/cgroup.procs 2>/dev/null; exec fio --name=client2_noisy_p2 --filename=test_file_client2_noisy_8G --size=8G --rw=read --bs=1M --ioengine=libaio --iodepth=32 --numjobs=1 --runtime=60 --time_based --direct=0 --group_reporting --output-format=json+ --output=results/shared_dual/client2_noisy_cached_p2.json
+=== cached mode complete ===
+done. results in results/shared_dual/
+ALL TESTS COMPLETE (3: 2 isolated + 1 shared 3-phase)
+### generate per-test result .md files
+  -> results/isolated_client1/result.md
+  -> results/isolated_client2/result.md
+  -> results/shared_dual/result.md
+### done — index: results/SUITE_RESULTS.md
+SUITE_DONE
