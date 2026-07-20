@@ -48,15 +48,22 @@ def report_latency(results_dir):
         for job in data["jobs"]:
             clat = job.get("read", {}).get("clat_ns", {})
             pct = clat.get("percentile", {})
-            p99 = pct.get("99.000000")
-            p999 = pct.get("99.900000")
+            # Surface the full tail: with host-cache masking the median and even
+            # p99 sit at cache speed (µs), and the real eviction/contention
+            # penalty only shows up at p99.9 / p99.99 / max. Reporting only p99
+            # hides it. See fairness_configs.ini header note.
+            tail = [
+                ("p99", pct.get("99.000000")),
+                ("p99.9", pct.get("99.900000")),
+                ("p99.99", pct.get("99.990000")),
+                ("max", clat.get("max")),
+            ]
             iops = job.get("read", {}).get("iops", 0.0)
             bw = job.get("read", {}).get("bw", 0.0)  # KiB/s
             line = f"  {name} [{job.get('jobname','?')}]:"
-            if p99 is not None:
-                line += f" p99={us(p99):.1f}us"
-            if p999 is not None:
-                line += f" p999={us(p999):.1f}us"
+            for label, val in tail:
+                if val is not None:
+                    line += f" {label}={us(val):.1f}us"
             line += f" iops={iops:.0f} bw={bw/1024:.1f}MiB/s"
             print(line)
 
