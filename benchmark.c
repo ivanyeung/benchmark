@@ -435,6 +435,17 @@ static void record_memstat(const char *cgroup_name, const char *client,
     long memcur = read_cgroup_scalar(cgroup_name, "memory.current");
     if (out_memcur) *out_memcur = memcur;
 
+    /* Extra workingset counters to tell "nothing to refault" apart from
+     * "refaults miscounted as fresh faults". All are cumulative; -1 if the
+     * kernel doesn't expose that exact field name (pre-5.9 splits differ).
+     *   nodereclaim: shadow (workingset) nodes reclaimed under pressure -> a
+     *                re-read of such a page counts as a fault, NOT a refault.
+     *   activate_file: file pages promoted to the active LRU (retained set).
+     *   restore_file:  refaulted pages restored to the active list. */
+    long nodereclaim = read_memstat_field(cgroup_name, "workingset_nodereclaim");
+    long activate    = read_memstat_field(cgroup_name, "workingset_activate_file");
+    long restore     = read_memstat_field(cgroup_name, "workingset_restore_file");
+
     char dir[MAX_CMD], path[MAX_CMD];
     ensure_subdir(opt.output_dir, "memstat", dir, sizeof(dir));
     snprintf(path, sizeof(path), "%s/%s_%s.csv", dir, client, mode);
@@ -445,13 +456,16 @@ static void record_memstat(const char *cgroup_name, const char *client,
     if (!exists)
         fprintf(f, "phase,when,wall_time,workingset_refault_file,"
                    "workingset_refault_file_delta,memory_current_bytes,"
-                   "memory_current_bytes_delta\n");
+                   "memory_current_bytes_delta,"
+                   "workingset_nodereclaim,workingset_activate_file,"
+                   "workingset_restore_file\n");
     long delta = (when && !strcmp(when, "after") && prev_refault >= 0 && refault >= 0)
                      ? refault - prev_refault : -1;
     long memdelta = (when && !strcmp(when, "after") && prev_memcur >= 0 && memcur >= 0)
                      ? memcur - prev_memcur : -1;
-    fprintf(f, "%d,%s,%ld,%ld,%ld,%ld,%ld\n",
-            phase, when, (long)time(NULL), refault, delta, memcur, memdelta);
+    fprintf(f, "%d,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+            phase, when, (long)time(NULL), refault, delta, memcur, memdelta,
+            nodereclaim, activate, restore);
     fclose(f);
 }
 
