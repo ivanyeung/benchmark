@@ -425,6 +425,31 @@ static long read_cgroup_scalar(const char *cgroup_name, const char *filename) {
     return found;
 }
 
+/* Sum rbytes across every device line in a cgroup's io.stat (cgroup v2).
+ * This is the bytes THIS cgroup actually read from the block device(s) — i.e.
+ * page-cache MISSES for a buffered reader (a cache hit does no device I/O, so it
+ * doesn't move rbytes). Unlike box-wide `iostat`, this is attributed per cgroup,
+ * so the two tenants no longer share one device-read bucket. Returns -1 if
+ * io.stat is absent or the io controller isn't enabled on this cgroup. NOTE:
+ * rbytes includes readahead, so it can slightly exceed the missed logical bytes. */
+static long read_cgroup_io_rbytes(const char *cgroup_name) {
+    if (!is_linux()) return -1;
+    char p[MAX_CMD];
+    snprintf(p, sizeof(p), "%s/%s/io.stat", CGROUP_ROOT, cgroup_name);
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    char line[512];
+    long total = -1;
+    while (fgets(line, sizeof(line), f)) {
+        char *r = strstr(line, "rbytes=");
+        if (!r) continue;
+        if (total < 0) total = 0;
+        total += strtol(r + 7, NULL, 10);   /* 7 = strlen("rbytes=") */
+    }
+    fclose(f);
+    return total;
+}
+
 /* Append a before/after memstat row to memstat/<client>_<mode>.csv */
 static void record_memstat(const char *cgroup_name, const char *client,
                            const char *mode, int phase, const char *when,
@@ -446,6 +471,11 @@ static void record_memstat(const char *cgroup_name, const char *client,
     long activate    = read_memstat_field(cgroup_name, "workingset_activate_file");
     long restore     = read_memstat_field(cgroup_name, "workingset_restore_file");
 
+    /* Per-cgroup device bytes read = this tenant's cache misses (see
+     * read_cgroup_io_rbytes). Raw cumulative value; the analyzer takes the
+     * after-before delta per phase. */
+    long io_rbytes = read_cgroup_io_rbytes(cgroup_name);
+
     char dir[MAX_CMD], path[MAX_CMD];
     ensure_subdir(opt.output_dir, "memstat", dir, sizeof(dir));
     snprintf(path, sizeof(path), "%s/%s_%s.csv", dir, client, mode);
@@ -458,14 +488,14 @@ static void record_memstat(const char *cgroup_name, const char *client,
                    "workingset_refault_file_delta,memory_current_bytes,"
                    "memory_current_bytes_delta,"
                    "workingset_nodereclaim,workingset_activate_file,"
-                   "workingset_restore_file\n");
+                   "workingset_restore_file,io_rbytes\n");
     long delta = (when && !strcmp(when, "after") && prev_refault >= 0 && refault >= 0)
                      ? refault - prev_refault : -1;
     long memdelta = (when && !strcmp(when, "after") && prev_memcur >= 0 && memcur >= 0)
                      ? memcur - prev_memcur : -1;
-    fprintf(f, "%d,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+    fprintf(f, "%d,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
             phase, when, (long)time(NULL), refault, delta, memcur, memdelta,
-            nodereclaim, activate, restore);
+            nodereclaim, activate, restore, io_rbytes);
     fclose(f);
 }
 

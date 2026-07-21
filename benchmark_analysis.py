@@ -233,15 +233,47 @@ def _parse_iostat_samples(iostat_path, start_ts):
     return samples
 
 
+def _phase_miss_bytes(memstat_path):
+    """{phase: miss_bytes} from this cgroup's io.stat rbytes (after-before delta).
+
+    rbytes = bytes the cgroup actually read from the block device = its cache
+    misses (a page-cache hit does no device I/O). This is attributed per cgroup,
+    so the two tenants no longer share one device-read bucket the way box-wide
+    iostat does. Returns {} for runs recorded before the io_rbytes column existed
+    (or when the io controller wasn't enabled, i.e. all values -1) so the caller
+    can fall back to iostat."""
+    before, after = {}, {}
+    with open(memstat_path) as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "io_rbytes" not in reader.fieldnames:
+            return {}
+        for row in reader:
+            try:
+                ph, v = int(row["phase"]), int(row["io_rbytes"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if v < 0:
+                continue
+            (before if row.get("when") == "before" else after)[ph] = v
+    return {ph: max(0, after[ph] - before[ph]) for ph in after if ph in before}
+
+
+def _logical_read_bytes(results_dir, client, mode, ph):
+    """Total logical bytes fio read this phase (page-cache hits + misses)."""
+    data = load_json(os.path.join(results_dir, f"{client}_{mode}_p{ph}.json"))
+    total = 0
+    if data and "jobs" in data:
+        for job in data["jobs"]:
+            total += job.get("read", {}).get("io_bytes", 0)
+    return total
+
+
 def report_cache_hit_miss(results_dir):
-    """Approximate cache hit/miss: fio logical reads vs. iostat device reads
-    observed in the phase's wall-clock window (see [[_parse_iostat_samples]])."""
-    print("\n## \U0001f3af CACHE HIT / MISS (fio logical reads vs. device reads)")
+    """Cache hit/miss per phase. Preferred source: per-cgroup io.stat rbytes
+    (device bytes read by THIS cgroup = its misses). Falls back to box-wide
+    iostat (shared across tenants, approximate) for older runs."""
+    print("\n## \U0001f3af CACHE HIT / MISS (per-cgroup io.stat rbytes)")
     print("=" * 50)
-    print("  Approximate: miss ≈ device reads seen in iostat during the phase")
-    print("  window; hit = fio's logical reads minus that. iostat samples are")
-    print("  bucketed by report index, not exact timestamp — treat as an")
-    print("  estimate, not an exact count.")
 
     memstat_dir = os.path.join(results_dir, "memstat")
     iostat_dir = os.path.join(results_dir, "iostat")
@@ -250,36 +282,51 @@ def report_cache_hit_miss(results_dir):
         print("  (no memstat csv found — needs --cgroup-config)")
         return
 
+    def mib(b):
+        return b / (1024 * 1024)
+
     for mpath in memstat_files:
         client_mode = os.path.basename(mpath).replace(".csv", "")
         client, _, mode = client_mode.rpartition("_")
         if not client:
             continue
-        windows = _phase_windows(mpath)
-        if not windows:
+
+        miss_by_phase = _phase_miss_bytes(mpath)
+        if miss_by_phase:
+            print(f"\n**{client_mode}:** (device reads from this cgroup's io.stat)")
+            for ph in sorted(miss_by_phase):
+                logical = _logical_read_bytes(results_dir, client, mode, ph)
+                if logical <= 0:
+                    print(f"  phase {ph}: (no fio read bytes recorded)")
+                    continue
+                miss = min(miss_by_phase[ph], logical)  # readahead can overshoot; cap
+                hit = logical - miss
+                hit_rate = 100.0 * hit / logical
+                print(f"  phase {ph}: logical={mib(logical):,.1f}MiB  "
+                      f"hit={mib(hit):,.1f}MiB ({hit_rate:.2f}%)  "
+                      f"miss={mib(miss):,.1f}MiB ({100 - hit_rate:.2f}%)")
             continue
 
+        # ---- fallback: box-wide iostat (shared bucket, approximate) ----
+        windows = _phase_windows(mpath)
         iostat_path = os.path.join(iostat_dir, f"run_{mode}.iostat")
         ts_path = os.path.join(iostat_dir, f"run_{mode}.start_ts")
-        if not (os.path.exists(iostat_path) and os.path.exists(ts_path)):
-            print(f"\n**{client_mode}:** (no iostat data)")
+        if not (windows and os.path.exists(iostat_path) and os.path.exists(ts_path)):
+            print(f"\n**{client_mode}:** (no io_rbytes column and no iostat data)")
             continue
         with open(ts_path) as f:
             start_ts = int(f.read().strip())
         samples = _parse_iostat_samples(iostat_path, start_ts)
-
-        print(f"\n**{client_mode}:**")
+        print(f"\n**{client_mode}:** (fallback: box-wide iostat, shared across tenants)")
         for ph in sorted(windows):
             before_ts, after_ts = windows[ph]
             device_reads = sum(r for (wt, r) in samples
                                 if before_ts <= wt <= after_ts + 1)
-
             data = load_json(os.path.join(results_dir, f"{client}_{mode}_p{ph}.json"))
             total_ios = 0
             if data and "jobs" in data:
                 for job in data["jobs"]:
                     total_ios += job.get("read", {}).get("total_ios", 0)
-
             if total_ios <= 0:
                 print(f"  phase {ph}: (no fio read ios recorded)")
                 continue
