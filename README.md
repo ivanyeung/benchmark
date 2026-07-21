@@ -325,6 +325,59 @@ phase_0_ioengine = libaio
 > **Reminder:** run writer-B pairings with `-m cached`. In `direct` mode fio
 > bypasses the page cache, so B produces no dirty pages and Mechanism 2 vanishes.
 
+### Controlling the victim's hot set (`random_distribution`)
+
+`phase_*_random_distribution` maps to fio's `--random_distribution` and decides
+**how the victim's random reads are spread across its file** — i.e. how big and
+how hot its working set is. This is the knob that determines whether the shared
+cache cap actually causes misses.
+
+| value | effect |
+|-------|--------|
+| _(unset)_ | uniform — every page equally likely (footprint = whole file) |
+| `zipf:1.2` | Zipf skew; concentrates most reads on a small **implicit** hot set (theta higher = more skew). Hot-set size is emergent, not chosen. |
+| `zoned:90/20:10/80` | 90% of reads to the first **20%** of the file, 10% to the rest (zone sizes as **percentages**). |
+| `zoned_abs:90/200M:10/824M` | same idea, zone sizes as **absolute bytes** — lets you name an exact hot-set size. |
+
+**Reading `zoned_abs:90/200M:10/824M`:** each `pct/size` pair is a zone, laid
+out consecutively from offset 0:
+
+```
+zoned_abs : 90/200M : 10/824M
+              │  │       │  └── next 824 MiB (the cold tail)
+              │  │       └───── gets 10% of reads
+              │  └───────────── first 200 MiB (the hot set)
+              └──────────────── gets 90% of reads
+```
+
+So 90% of the victim's random reads keep hitting the same first **200 MiB**
+(kept warm in cache), and 10% scatter over the remaining 824 MiB (rarely
+resident → usually a miss). `200M + 824M = 1G`, covering the whole file.
+`_abs` = absolute sizes; plain `zoned` uses percentages.
+
+**Why it matters — the miss condition.** Frequently re-referenced pages are
+LRU-protected, so the victim *keeps* its hot set as long as it fits. Misses
+happen only when:
+
+```
+hot_set  >  cache the victim can retain  (≈ memory.max − what the aggressor holds)
+```
+
+A small hot set (e.g. Zipf's implicit ~50 MiB) fits in any pool and never
+misses, so shrinking `memory.max` alone does nothing. Pin a larger explicit hot
+set with `zoned_abs` **and** run it against a tight pool so the set can't be
+retained. Tuning knobs:
+
+- **first number** (e.g. `90/…`) — access concentration; lower it to spread
+  reads out and raise the miss rate.
+- **zone size** (e.g. `200M`) — hot-set footprint; grow it until it exceeds the
+  victim's retainable cache under contention.
+
+> **Pair with the cap:** `zoned_abs:90/200M:10/824M` only produces misses when
+> the pool is smaller than the hot set can be retained in (e.g. `memory.max=512M`
+> in `cgroup_shared.ini`). In a 2G pool the 200 MiB fits and the victim just
+> hits — grow the hot set or shrink the pool until misses appear.
+
 ## 📋 Test Results
 
 Results are saved under `benchmark_results/`:
